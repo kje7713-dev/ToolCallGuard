@@ -1,107 +1,180 @@
-# ToolCallGuard
-Incorporate schema validation into LLM outputs. 
-You are a GitHub coding agent. Build a new TypeScript library named "toolcallguard" in this repo.
+# toolcallguard
 
-GOAL
-Create a minimal, production-credible SDK that:
-1) Registers tools with Zod schemas.
-2) Validates LLM tool-call outputs in a universal envelope:
-   {
-     "tool_name": string,
-     "args": object
-   }
-3) Enforces an allowlist of tools.
-4) If invalid, automatically retries by calling a provided "modelCall" function with a correction prompt that includes validation errors.
-5) Returns either:
-   - { ok: true, tool_name, args } (args typed)
-   - { ok: false, error_code, errors, attempts, last_output }
+> Schema-validated LLM tool-call guard with automatic retry.
 
-NON-GOALS (DO NOT BUILD)
-- No web UI, no database, no hosted service.
-- No LangChain integration (provide examples only).
-- No complicated plugin architecture.
+[![CI](https://github.com/ToolCallGuard/ToolCallGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/ToolCallGuard/ToolCallGuard/actions/workflows/ci.yml)
+[![npm version](https://badge.fury.io/js/toolcallguard.svg)](https://badge.fury.io/js/toolcallguard)
 
-TECH STACK
-- Node 20+, TypeScript
-- Zod for validation
-- vitest for tests
-- tsup for build
-- eslint + prettier for formatting
+## Installation
 
-DELIVERABLES
-1) Source code under /src with clean exports.
-2) Unit tests covering:
-   - valid tool call passes
-   - invalid JSON (not parseable) triggers retry
-   - wrong tool_name triggers retry then fails with allowlist error
-   - args missing required field triggers retry then passes
-   - retries exhausted returns ok:false with errors
-3) Examples under /examples:
-   - /examples/raw-openai-style (no actual API call; stub modelCall)
-   - Demonstrate: register refund_order tool and guard a bad output into a valid one
-4) Documentation:
-   - README.md explaining installation, quickstart, API reference, and example.
-   - Include “Design goals” and “Failure modes” sections.
-5) GitHub Actions:
-   - CI workflow: lint + test + build on PRs and pushes.
-   - Release workflow: on tag v* publish to npm (assume secrets NPM_TOKEN set).
-6) Package readiness:
-   - package.json with proper name "toolcallguard"
-   - types exported
-   - ESM + CJS builds (tsup config)
-   - semantic version friendly
-   - no broken imports
+```bash
+npm install toolcallguard zod
+```
 
-API DESIGN (IMPLEMENT THIS)
-- createRegistry(): returns registry with:
-   - registerTool(name: string, schema: ZodSchema<any>, options?: { description?: string })
-   - getToolSchema(name)
-   - listTools()
-- guardToolCall(params):
-   params = {
-     registry,
-     modelCall: (prompt: string) => Promise<string>,
-     initialPrompt: string,
-     maxAttempts?: number (default 3),
-     allowTools?: string[] (default registry tools),
-     strictJsonOnly?: boolean (default true),
-     onAttempt?: (event) => void  // optional callback for tracing
-   }
-   Behavior:
-   - Call modelCall(initialPrompt) to get raw string output.
-   - Try parse JSON.
-   - Validate envelope shape: tool_name string; args object.
-   - Validate tool_name in allowlist.
-   - Validate args against the tool’s schema.
-   - If any step fails and attempts remain:
-       Build a correction prompt that includes:
-         * the schema expectations (tool names + field hints)
-         * the validation error messages
-         * instruction: return ONLY valid JSON matching the envelope
-       Call modelCall(correctionPrompt) again.
-   - If success, return ok:true.
-   - If exhausted, return ok:false with structured error details.
+## Quickstart
 
-ERROR CODES
-Use these string codes:
-- INVALID_JSON
-- INVALID_ENVELOPE
-- TOOL_NOT_ALLOWED
-- UNKNOWN_TOOL
-- INVALID_ARGS
-- RETRIES_EXHAUSTED
+```ts
+import { z } from 'zod';
+import { createRegistry, guardToolCall } from 'toolcallguard';
 
-IMPLEMENTATION DETAILS
-- Put prompt-building logic in src/prompts.ts
-- Put parsing/validation in src/validate.ts
-- Main export in src/index.ts
-- Keep functions small and testable.
+// 1. Register your tools
+const registry = createRegistry();
+registry.registerTool(
+  'refund_order',
+  z.object({
+    order_id: z.string(),
+    reason: z.string(),
+  }),
+  { description: 'Refund an order by ID' },
+);
 
-CODING RULES
-- No any-types leaking in public API. Use generics where reasonable.
-- No console.log in library code.
-- All files must be formatted with prettier.
-- Tests must be deterministic.
+// 2. Guard a tool call (with automatic retry on bad output)
+const result = await guardToolCall({
+  registry,
+  modelCall: async (prompt) => callYourLLM(prompt), // your LLM integration
+  initialPrompt: 'Refund order ORD-99 because the item was damaged.',
+  maxAttempts: 3,
+});
 
-OUTPUT
-Create a PR with all files added/updated. Ensure CI passes.
+if (result.ok) {
+  console.log(result.tool_name); // "refund_order"
+  console.log(result.args);      // { order_id: "ORD-99", reason: "item was damaged" }
+} else {
+  console.error(result.error_code, result.errors);
+}
+```
+
+## API Reference
+
+### `createRegistry()`
+
+Creates a tool registry.
+
+```ts
+const registry = createRegistry();
+```
+
+**Returns:** `Registry`
+
+| Method | Description |
+|--------|-------------|
+| `registerTool(name, schema, options?)` | Register a tool with a Zod schema |
+| `getToolSchema(name)` | Get the Zod schema for a tool by name |
+| `listTools()` | List all registered tools |
+
+---
+
+### `guardToolCall(params)`
+
+Validates an LLM output against the registered tools and retries automatically on failure.
+
+**Params:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `registry` | `Registry` | required | The tool registry |
+| `modelCall` | `(prompt: string) => Promise<string>` | required | Your LLM call function |
+| `initialPrompt` | `string` | required | The first prompt to send to the model |
+| `maxAttempts` | `number` | `3` | Maximum number of attempts (including retries) |
+| `allowTools` | `string[]` | all registered tools | Allowlist of permitted tool names |
+| `strictJsonOnly` | `boolean` | `true` | Reserved for future use |
+| `onAttempt` | `(event: AttemptEvent) => void` | — | Callback fired after each attempt |
+
+**Returns:** `Promise<GuardResult<T>>`
+
+```ts
+// Success
+{ ok: true; tool_name: string; args: T }
+
+// Failure
+{ ok: false; error_code: ErrorCode; errors: string[]; attempts: number; last_output: string }
+```
+
+---
+
+### Error Codes
+
+| Code | Meaning |
+|------|---------|
+| `INVALID_JSON` | Model output could not be parsed as JSON |
+| `INVALID_ENVELOPE` | JSON does not match `{ tool_name, args }` shape |
+| `TOOL_NOT_ALLOWED` | `tool_name` is not in the `allowTools` list |
+| `UNKNOWN_TOOL` | `tool_name` is not registered in the registry |
+| `INVALID_ARGS` | `args` failed Zod schema validation |
+| `RETRIES_EXHAUSTED` | All attempts failed (generic fallback) |
+
+---
+
+### `AttemptEvent`
+
+```ts
+interface AttemptEvent {
+  attempt: number;       // 1-based attempt number
+  rawOutput: string;     // Raw string returned by modelCall
+  errorCode?: ErrorCode; // Set if the attempt failed
+  errors?: string[];     // Validation error messages
+}
+```
+
+## Example
+
+See [`examples/raw-openai-style/index.ts`](./examples/raw-openai-style/index.ts) for a complete example using a stub `modelCall` that simulates a bad first response followed by a corrected one.
+
+```ts
+import { z } from 'zod';
+import { createRegistry, guardToolCall } from 'toolcallguard';
+
+const registry = createRegistry();
+registry.registerTool(
+  'refund_order',
+  z.object({ order_id: z.string(), reason: z.string() }),
+  { description: 'Refund an order' },
+);
+
+// Simulates a model that gives a bad answer then a good one
+const responses = [
+  '{"tool_name":"refund_order","args":{"order_id":"42"}}',           // missing reason
+  '{"tool_name":"refund_order","args":{"order_id":"42","reason":"broken"}}', // valid
+];
+let i = 0;
+const stubModel = async () => responses[i++] ?? responses.at(-1)!;
+
+const result = await guardToolCall({
+  registry,
+  modelCall: stubModel,
+  initialPrompt: 'Refund order 42 because it was broken.',
+});
+// result.ok === true, result.args === { order_id: "42", reason: "broken" }
+```
+
+## Design Goals
+
+- **Minimal surface area** — two functions, one type. Easy to integrate into any LLM framework.
+- **Zod-first** — schemas are the single source of truth for validation and correction prompts.
+- **Deterministic retries** — correction prompts include the exact validation errors so the model can self-correct.
+- **No vendor lock-in** — `modelCall` is just `(prompt: string) => Promise<string>`. Works with OpenAI, Anthropic, local models, or any stub.
+- **Observable** — `onAttempt` callback gives full visibility into every attempt without coupling to a specific logging framework.
+
+## Failure Modes
+
+| Scenario | Behaviour |
+|----------|-----------|
+| Model returns invalid JSON repeatedly | Returns `{ ok: false, error_code: "INVALID_JSON" }` after `maxAttempts` |
+| Model uses a tool not in `allowTools` | Returns `{ ok: false, error_code: "TOOL_NOT_ALLOWED" }` after retries |
+| Model omits a required field | Correction prompt includes field errors; retried up to `maxAttempts` |
+| Model always returns wrong schema | Returns `{ ok: false, error_code: "INVALID_ARGS", errors: [...] }` |
+| `modelCall` throws | Exception propagates to caller — wrap in try/catch if needed |
+
+## Development
+
+```bash
+npm install
+npm run build   # tsup ESM + CJS
+npm test        # vitest
+npm run lint    # eslint
+npm run format  # prettier
+```
+
+## License
+
+MIT
