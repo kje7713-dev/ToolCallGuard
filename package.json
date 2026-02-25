@@ -1,0 +1,40 @@
+{
+  "name": "toolcallguard",
+  "version": "0.1.0",
+  "description": "Schema-validated LLM tool-call guard with automatic retry",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write src examples",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["llm", "tool-call", "validation", "zod", "ai"],
+  "license": "MIT",
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "peerDependencies": {
+    "zod": "^3.0.0"
+  },
+  "dependencies": {
+    "zod": "^3.22.0"
+  }
+}
