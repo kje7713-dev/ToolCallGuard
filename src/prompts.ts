@@ -9,17 +9,7 @@ export function buildCorrectionPrompt(params: {
   const { errorCode, errors, tools, lastOutput } = params;
 
   const toolDescriptions = tools
-    .map((t) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const shape = (t.schema as any)._def?.shape?.();
-      const fields = shape
-        ? Object.entries(shape)
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map(([k, v]: [string, any]) => `    ${k}: ${v._def?.typeName ?? 'unknown'}`)
-            .join('\n')
-        : '    (no schema details available)';
-      return `- ${t.name}${t.description ? ` (${t.description})` : ''}:\n${fields}`;
-    })
+    .map((t) => `  - ${t.name}${t.description ? ` (${t.description})` : ''}`)
     .join('\n');
 
   return `Your previous response was invalid.
@@ -37,7 +27,7 @@ You must return ONLY valid JSON (no markdown, no explanation) matching this exac
   "args": { ... }
 }
 
-Available tools and their expected args:
+Available tools:
 ${toolDescriptions}
 
 Return ONLY the JSON object, nothing else.`;

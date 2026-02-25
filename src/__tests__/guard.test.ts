@@ -172,4 +172,64 @@ describe('guardToolCall', () => {
       expect(result.errors.some((e) => e.includes('order_id'))).toBe(true);
     }
   });
+
+  it('JSON inside fenced code block parses and succeeds', async () => {
+    const registry = makeRegistry();
+    const raw =
+      '```json\n{"tool_name":"refund_order","args":{"order_id":"123","reason":"damaged"}}\n```';
+    const modelCall = vi.fn().mockResolvedValue(raw);
+
+    const result = await guardToolCall({ registry, modelCall, initialPrompt: 'test' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.tool_name).toBe('refund_order');
+      expect(result.args).toEqual({ order_id: '123', reason: 'damaged' });
+    }
+  });
+
+  it('JSON preceded and followed by text parses and succeeds', async () => {
+    const registry = makeRegistry();
+    const raw =
+      'Sure! Here you go:\n```json\n{"tool_name":"refund_order","args":{"order_id":"123","reason":"x"}}\n```\nAnything else?';
+    const modelCall = vi.fn().mockResolvedValue(raw);
+
+    const result = await guardToolCall({ registry, modelCall, initialPrompt: 'test' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.tool_name).toBe('refund_order');
+    }
+  });
+
+  it('JSON embedded in text without fences parses and succeeds', async () => {
+    const registry = makeRegistry();
+    const raw =
+      'Call this: {"tool_name":"refund_order","args":{"order_id":"123","reason":"x"}} thanks';
+    const modelCall = vi.fn().mockResolvedValue(raw);
+
+    const result = await guardToolCall({ registry, modelCall, initialPrompt: 'test' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.tool_name).toBe('refund_order');
+    }
+  });
+
+  it('garbage JSON-like text returns INVALID_JSON', async () => {
+    const registry = makeRegistry();
+    const modelCall = vi.fn().mockResolvedValue('Here is {not json}');
+
+    const result = await guardToolCall({
+      registry,
+      modelCall,
+      initialPrompt: 'test',
+      maxAttempts: 1,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('INVALID_JSON');
+    }
+  });
 });
