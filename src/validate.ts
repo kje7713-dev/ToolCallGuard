@@ -8,10 +8,64 @@ export interface ValidationResult {
   envelope?: ToolCallEnvelope;
 }
 
+export function stripMarkdownFences(raw: string): string {
+  const match = raw.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+  return match ? match[1].trim() : raw;
+}
+
+export function extractFirstJsonValue(raw: string): string | null {
+  const openIdx = raw.search(/[{[]/);
+  if (openIdx === -1) return null;
+
+  const openChar = raw[openIdx];
+  const closeChar = openChar === '{' ? '}' : ']';
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = openIdx; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === openChar) {
+      depth++;
+    } else if (ch === closeChar) {
+      depth--;
+      if (depth === 0) {
+        return raw.slice(openIdx, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
 export function parseJson(raw: string): { ok: true; value: unknown } | { ok: false } {
   try {
     return { ok: true, value: JSON.parse(raw) };
   } catch {
+    // Try stripping markdown fences first, then extract first JSON value
+    const candidates = [stripMarkdownFences(raw), extractFirstJsonValue(raw)].filter(
+      (c): c is string => c !== null,
+    );
+    for (const candidate of candidates) {
+      try {
+        return { ok: true, value: JSON.parse(candidate) };
+      } catch {
+        // continue
+      }
+    }
     return { ok: false };
   }
 }

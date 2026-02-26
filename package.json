@@ -1,6 +1,6 @@
 {
   "name": "toolcallguard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Schema-validated LLM tool-call guard with automatic retry",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -29,12 +29,10 @@
     "prettier": "^3.2.0",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
-    "vitest": "^1.4.0"
+    "vitest": "^1.4.0",
+    "zod": "^3.22.0"
   },
   "peerDependencies": {
     "zod": "^3.0.0"
-  },
-  "dependencies": {
-    "zod": "^3.22.0"
   }
 }

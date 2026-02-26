@@ -2,8 +2,8 @@
 
 > Schema-validated LLM tool-call guard with automatic retry.
 
-[![CI](https://github.com/ToolCallGuard/ToolCallGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/ToolCallGuard/ToolCallGuard/actions/workflows/ci.yml)
-[![npm version](https://badge.fury.io/js/toolcallguard.svg)](https://badge.fury.io/js/toolcallguard)
+[![CI](https://github.com/kje7713-dev/ToolCallGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/kje7713-dev/ToolCallGuard/actions/workflows/ci.yml)
+[![npm version](https://badge.fury.io/js/toolcallguard.svg)](https://www.npmjs.com/package/toolcallguard)
 
 ## Installation
 
@@ -67,6 +67,8 @@ const registry = createRegistry();
 ### `guardToolCall(params)`
 
 Validates an LLM output against the registered tools and retries automatically on failure.
+
+> **Note:** ToolCallGuard attempts to extract JSON from markdown fences or surrounding text before parsing.
 
 **Params:**
 
