@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { createRegistry } from '../registry.js';
 import { guardToolCall } from '../guard.js';
+import type { CircuitBreakerEvent } from '../types.js';
 
 function makeRegistry() {
   const registry = createRegistry();
@@ -231,5 +232,215 @@ describe('guardToolCall', () => {
     if (!result.ok) {
       expect(result.error_code).toBe('INVALID_JSON');
     }
+  });
+
+  // --- Policy hook tests ---
+
+  it('policy trip: valid envelope + valid args + policy denies returns POLICY_TRIPPED', async () => {
+    const registry = createRegistry();
+    registry.registerTool(
+      'refund_order',
+      z.object({ order_id: z.string(), amount: z.number() }),
+      {
+        description: 'Refund an order',
+        policy: {
+          preExecute({ args }) {
+            const { amount } = args as { amount: number };
+            if (amount > 50) {
+              return { allow: false, reason: 'Amount exceeds limit', escalate: true };
+            }
+            return { allow: true };
+          },
+        },
+      },
+    );
+
+    const modelCall = vi
+      .fn()
+      .mockResolvedValue('{"tool_name":"refund_order","args":{"order_id":"1","amount":100}}');
+
+    const result = await guardToolCall({ registry, modelCall, initialPrompt: 'test' });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('POLICY_TRIPPED');
+      expect(result.reason).toBe('Amount exceeds limit');
+      expect(result.escalate).toBe(true);
+    }
+  });
+
+  it('policy trip: emits POLICY_TRIPPED event via onEvent', async () => {
+    const registry = createRegistry();
+    registry.registerTool(
+      'refund_order',
+      z.object({ order_id: z.string(), amount: z.number() }),
+      {
+        policy: {
+          preExecute() {
+            return { allow: false, reason: 'Blocked by policy', escalate: false };
+          },
+        },
+      },
+    );
+
+    const modelCall = vi
+      .fn()
+      .mockResolvedValue('{"tool_name":"refund_order","args":{"order_id":"1","amount":200}}');
+
+    const emitted: CircuitBreakerEvent[] = [];
+    const result = await guardToolCall({
+      registry,
+      modelCall,
+      initialPrompt: 'test',
+      onEvent: (e) => emitted.push(e),
+    });
+
+    expect(result.ok).toBe(false);
+    const policyEvent = emitted.find((e) => e.eventType === 'POLICY_TRIPPED');
+    expect(policyEvent).toBeDefined();
+    expect(policyEvent?.reason).toBe('Blocked by policy');
+    expect(policyEvent?.tool_name).toBe('refund_order');
+    expect(policyEvent?.escalate).toBe(false);
+    expect(policyEvent?.timestamp).toBeDefined();
+  });
+
+  it('policy allow: valid args + policy allows returns ok:true', async () => {
+    const registry = createRegistry();
+    registry.registerTool(
+      'refund_order',
+      z.object({ order_id: z.string(), amount: z.number() }),
+      {
+        policy: {
+          preExecute() {
+            return { allow: true };
+          },
+        },
+      },
+    );
+
+    const modelCall = vi
+      .fn()
+      .mockResolvedValue('{"tool_name":"refund_order","args":{"order_id":"1","amount":10}}');
+
+    const result = await guardToolCall({ registry, modelCall, initialPrompt: 'test' });
+
+    expect(result.ok).toBe(true);
+  });
+
+  // --- Event emission tests ---
+
+  it('emits ACTION_ALLOWED with tool_name on success', async () => {
+    const registry = makeRegistry();
+    const modelCall = vi
+      .fn()
+      .mockResolvedValue('{"tool_name":"refund_order","args":{"order_id":"1","reason":"x"}}');
+
+    const emitted: CircuitBreakerEvent[] = [];
+    const result = await guardToolCall({
+      registry,
+      modelCall,
+      initialPrompt: 'test',
+      onEvent: (e) => emitted.push(e),
+    });
+
+    expect(result.ok).toBe(true);
+    const allowedEvent = emitted.find((e) => e.eventType === 'ACTION_ALLOWED');
+    expect(allowedEvent).toBeDefined();
+    expect(allowedEvent?.tool_name).toBe('refund_order');
+    expect(allowedEvent?.timestamp).toBeDefined();
+  });
+
+  it('emits INVALID_STRUCTURE and RETRY_ATTEMPT on invalid JSON', async () => {
+    const registry = makeRegistry();
+    const modelCall = vi.fn().mockResolvedValue('not json');
+
+    const emitted: CircuitBreakerEvent[] = [];
+    await guardToolCall({
+      registry,
+      modelCall,
+      initialPrompt: 'test',
+      maxAttempts: 1,
+      onEvent: (e) => emitted.push(e),
+    });
+
+    const retryEvent = emitted.find((e) => e.eventType === 'RETRY_ATTEMPT');
+    expect(retryEvent).toBeDefined();
+    expect(retryEvent?.error_code).toBe('INVALID_JSON');
+
+    const structureEvent = emitted.find((e) => e.eventType === 'INVALID_STRUCTURE');
+    expect(structureEvent).toBeDefined();
+    expect(structureEvent?.error_code).toBe('INVALID_JSON');
+  });
+
+  it('emits INVALID_STRUCTURE and RETRY_ATTEMPT on invalid envelope', async () => {
+    const registry = makeRegistry();
+    const modelCall = vi.fn().mockResolvedValue('{"foo":"bar"}');
+
+    const emitted: CircuitBreakerEvent[] = [];
+    await guardToolCall({
+      registry,
+      modelCall,
+      initialPrompt: 'test',
+      maxAttempts: 1,
+      onEvent: (e) => emitted.push(e),
+    });
+
+    const retryEvent = emitted.find((e) => e.eventType === 'RETRY_ATTEMPT');
+    expect(retryEvent).toBeDefined();
+    expect(retryEvent?.error_code).toBe('INVALID_ENVELOPE');
+
+    const structureEvent = emitted.find((e) => e.eventType === 'INVALID_STRUCTURE');
+    expect(structureEvent).toBeDefined();
+  });
+
+  it('emits ACTION_BLOCKED after all retries exhausted', async () => {
+    const registry = makeRegistry();
+    const modelCall = vi.fn().mockResolvedValue('not json');
+
+    const emitted: CircuitBreakerEvent[] = [];
+    const result = await guardToolCall({
+      registry,
+      modelCall,
+      initialPrompt: 'test',
+      maxAttempts: 2,
+      onEvent: (e) => emitted.push(e),
+    });
+
+    expect(result.ok).toBe(false);
+    const blockedEvent = emitted.find((e) => e.eventType === 'ACTION_BLOCKED');
+    expect(blockedEvent).toBeDefined();
+    expect(blockedEvent?.error_code).toBe('INVALID_JSON');
+  });
+
+  it('passes context to policy preExecute', async () => {
+    const registry = createRegistry();
+    let receivedContext: unknown;
+
+    registry.registerTool(
+      'refund_order',
+      z.object({ order_id: z.string() }),
+      {
+        policy: {
+          preExecute({ context }) {
+            receivedContext = context;
+            return { allow: true };
+          },
+        },
+      },
+    );
+
+    const modelCall = vi
+      .fn()
+      .mockResolvedValue('{"tool_name":"refund_order","args":{"order_id":"1"}}');
+
+    const userContext = { userId: 'user-42', role: 'admin' };
+    await guardToolCall({
+      registry,
+      modelCall,
+      initialPrompt: 'test',
+      context: userContext,
+    });
+
+    expect(receivedContext).toEqual(userContext);
   });
 });
