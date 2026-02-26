@@ -1,6 +1,6 @@
 # toolcallguard
 
-> Schema-validated LLM tool-call guard with automatic retry.
+> **ToolCallGuard is an AI Action Circuit Breaker:** it ensures LLM-suggested tool calls are valid and policy-compliant before execution. Schema validation catches malformed outputs; policy hooks block unsafe actions before they run.
 
 [![CI](https://github.com/kje7713-dev/ToolCallGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/kje7713-dev/ToolCallGuard/actions/workflows/ci.yml)
 [![npm version](https://badge.fury.io/js/toolcallguard.svg)](https://www.npmjs.com/package/toolcallguard)
@@ -58,15 +58,39 @@ const registry = createRegistry();
 
 | Method | Description |
 |--------|-------------|
-| `registerTool(name, schema, options?)` | Register a tool with a Zod schema |
+| `registerTool(name, schema, options?)` | Register a tool with a Zod schema and optional policy |
 | `getToolSchema(name)` | Get the Zod schema for a tool by name |
+| `getToolEntry(name)` | Get the full `ToolEntry` (including policy) for a tool by name |
 | `listTools()` | List all registered tools |
+
+#### Registering a tool with a policy
+
+```ts
+registry.registerTool(
+  'refund_order',
+  z.object({ order_id: z.string(), amount: z.number() }),
+  {
+    description: 'Refund an order',
+    policy: {
+      preExecute({ args, context }) {
+        const { amount } = args as { amount: number };
+        if (amount > 50) {
+          return { allow: false, reason: 'Refund exceeds $50 limit', escalate: true };
+        }
+        return { allow: true };
+      },
+    },
+  },
+);
+```
+
+When the policy returns `{ allow: false }`, `guardToolCall` returns `{ ok: false, error_code: "POLICY_TRIPPED", reason, escalate }` without executing the tool.
 
 ---
 
 ### `guardToolCall(params)`
 
-Validates an LLM output against the registered tools and retries automatically on failure.
+Validates an LLM output against the registered tools, evaluates policies, and retries automatically on failure.
 
 > **Note:** ToolCallGuard attempts to extract JSON from markdown fences or surrounding text before parsing.
 
@@ -80,7 +104,9 @@ Validates an LLM output against the registered tools and retries automatically o
 | `maxAttempts` | `number` | `3` | Maximum number of attempts (including retries) |
 | `allowTools` | `string[]` | all registered tools | Allowlist of permitted tool names |
 | `strictJsonOnly` | `boolean` | `true` | Reserved for future use |
-| `onAttempt` | `(event: AttemptEvent) => void` | — | Callback fired after each attempt |
+| `onAttempt` | `(event: AttemptEvent) => void` | — | Callback fired after each attempt (backwards-compatible) |
+| `context` | `unknown` | — | Optional context passed to policy `preExecute` hooks |
+| `onEvent` | `(event: CircuitBreakerEvent) => void` | — | Callback fired for structured telemetry events |
 
 **Returns:** `Promise<GuardResult<T>>`
 
@@ -89,7 +115,23 @@ Validates an LLM output against the registered tools and retries automatically o
 { ok: true; tool_name: string; args: T }
 
 // Failure
-{ ok: false; error_code: ErrorCode; errors: string[]; attempts: number; last_output: string }
+{ ok: false; error_code: ErrorCode; errors: string[]; attempts: number; last_output: string; reason?: string; escalate?: boolean }
+```
+
+#### Using `onEvent` for telemetry
+
+```ts
+const result = await guardToolCall({
+  registry,
+  modelCall,
+  initialPrompt: 'Refund order ORD-42.',
+  onEvent: (event) => {
+    console.log(JSON.stringify(event));
+    // { eventType: 'ACTION_ALLOWED', tool_name: 'refund_order', timestamp: '2024-...' }
+    // { eventType: 'RETRY_ATTEMPT', attempt: 1, error_code: 'INVALID_JSON', errors: [...], timestamp: '...' }
+    // { eventType: 'POLICY_TRIPPED', tool_name: 'refund_order', reason: '...', escalate: true, timestamp: '...' }
+  },
+});
 ```
 
 ---
@@ -104,6 +146,7 @@ Validates an LLM output against the registered tools and retries automatically o
 | `UNKNOWN_TOOL` | `tool_name` is not registered in the registry |
 | `INVALID_ARGS` | `args` failed Zod schema validation |
 | `RETRIES_EXHAUSTED` | All attempts failed (generic fallback) |
+| `POLICY_TRIPPED` | A registered policy blocked the action |
 
 ---
 
@@ -118,9 +161,42 @@ interface AttemptEvent {
 }
 ```
 
-## Example
+### `CircuitBreakerEvent`
 
-See [`examples/raw-openai-style/index.ts`](./examples/raw-openai-style/index.ts) for a complete example using a stub `modelCall` that simulates a bad first response followed by a corrected one.
+```ts
+interface CircuitBreakerEvent {
+  eventType: 'RETRY_ATTEMPT' | 'ACTION_ALLOWED' | 'ACTION_BLOCKED' | 'POLICY_TRIPPED' | 'INVALID_STRUCTURE';
+  attempt?: number;
+  tool_name?: string;
+  error_code?: ErrorCode;
+  errors?: string[];
+  reason?: string;
+  escalate?: boolean;
+  timestamp: string;          // ISO 8601
+  metadata?: Record<string, unknown>;
+}
+```
+
+### `ToolPolicy`
+
+```ts
+interface ToolPolicy {
+  preExecute?: (input: {
+    toolName: string;
+    args: unknown;
+    context?: unknown;
+  }) => PolicyDecision | Promise<PolicyDecision>;
+}
+
+type PolicyDecision =
+  | { allow: true }
+  | { allow: false; reason: string; escalate?: boolean };
+```
+
+## Examples
+
+- [`examples/raw-openai-style/index.ts`](./examples/raw-openai-style/index.ts) — basic retry flow with stub model
+- [`examples/production-like/index.ts`](./examples/production-like/index.ts) — policy hook that blocks high-value refunds, with `onEvent` telemetry
 
 ```ts
 import { z } from 'zod';
@@ -151,11 +227,12 @@ const result = await guardToolCall({
 
 ## Design Goals
 
+- **Circuit breaker** — policy hooks block unsafe LLM actions before execution, with structured event telemetry for auditing.
 - **Minimal surface area** — two functions, one type. Easy to integrate into any LLM framework.
 - **Zod-first** — schemas are the single source of truth for validation and correction prompts.
 - **Deterministic retries** — correction prompts include the exact validation errors so the model can self-correct.
 - **No vendor lock-in** — `modelCall` is just `(prompt: string) => Promise<string>`. Works with OpenAI, Anthropic, local models, or any stub.
-- **Observable** — `onAttempt` callback gives full visibility into every attempt without coupling to a specific logging framework.
+- **Observable** — `onAttempt` and `onEvent` callbacks give full visibility into every attempt and event without coupling to a specific logging framework.
 
 ## Failure Modes
 
@@ -165,6 +242,7 @@ const result = await guardToolCall({
 | Model uses a tool not in `allowTools` | Returns `{ ok: false, error_code: "TOOL_NOT_ALLOWED" }` after retries |
 | Model omits a required field | Correction prompt includes field errors; retried up to `maxAttempts` |
 | Model always returns wrong schema | Returns `{ ok: false, error_code: "INVALID_ARGS", errors: [...] }` |
+| Policy blocks the action | Returns `{ ok: false, error_code: "POLICY_TRIPPED", reason, escalate }` immediately |
 | `modelCall` throws | Exception propagates to caller — wrap in try/catch if needed |
 
 ## Development

@@ -1,5 +1,5 @@
 import { ZodSchema } from 'zod';
-import { Registry, ToolEntry } from './types.js';
+import { Registry, ToolEntry, ToolPolicy } from './types.js';
 
 export function createRegistry(): Registry {
   const tools = new Map<string, ToolEntry>();
@@ -8,13 +8,17 @@ export function createRegistry(): Registry {
     registerTool(
       name: string,
       schema: ZodSchema<unknown>,
-      options?: { description?: string },
+      options?: { description?: string; policy?: ToolPolicy },
     ): void {
-      tools.set(name, { name, schema, description: options?.description });
+      tools.set(name, { name, schema, description: options?.description, policy: options?.policy });
     },
 
     getToolSchema(name: string): ZodSchema<unknown> | undefined {
       return tools.get(name)?.schema;
+    },
+
+    getToolEntry(name: string): ToolEntry | undefined {
+      return tools.get(name);
     },
 
     listTools(): ToolEntry[] {
