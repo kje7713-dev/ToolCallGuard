@@ -390,7 +390,20 @@ const result = await guardToolCall({
 
 ## Releasing
 
-Push a tag `vX.Y.Z` to publish to npm via GitHub Actions. Requires the `NPM_TOKEN` secret to be set in the repository settings. See [RELEASING.md](./RELEASING.md) for full instructions.
+This project publishes to npm automatically via GitHub Actions.
+
+**Option 1 — Tag-based release (recommended):**
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+**Option 2 — Manual release:**
+
+Go to **GitHub → Actions → Release → Run workflow**.
+
+Requires the `NPM_TOKEN` secret to be set in the repository settings. See [RELEASING.md](./RELEASING.md) for full instructions.
 
 ## Development
 

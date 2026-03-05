@@ -35,6 +35,19 @@
 
 ---
 
+## Manual Release (GitHub UI)
+
+You can also trigger a release manually without pushing a tag:
+
+1. Go to the repository on GitHub.
+2. Click **Actions**.
+3. Select the **Release** workflow.
+4. Click **Run workflow**.
+
+> **Note:** When triggering manually, the tag/version consistency check is skipped (it only applies to tag-based releases). Ensure `package.json` is already bumped and pushed to the correct branch before running manually.
+
+---
+
 ## What the workflow does
 
 `.github/workflows/release.yml`:
@@ -42,10 +55,11 @@
 1. Checks out the repository.
 2. Configures Node.js with the npm registry (`https://registry.npmjs.org`).
 3. Runs `npm ci` to install dependencies.
-4. Verifies the git tag version matches `package.json` (`scripts/check-version.mjs`).
+4. Verifies the git tag version matches `package.json` (`scripts/check-version.mjs`) — **tag-based releases only**.
 5. Runs `npm run build` to produce the `dist/` output.
-6. Checks `NODE_AUTH_TOKEN` is set (`scripts/verify-release-env.mjs`) — exits early with a clear error if not.
-7. Runs `npm publish --access public` authenticated via `NODE_AUTH_TOKEN`.
+6. Verifies the `dist/` folder exists — exits with an error if the build produced no artifacts.
+7. Checks `NODE_AUTH_TOKEN` is set (`scripts/verify-release-env.mjs`) — exits early with a clear error if not.
+8. Runs `npm publish --access public` authenticated via `NODE_AUTH_TOKEN`.
 
 ---
 
