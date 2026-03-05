@@ -1,4 +1,4 @@
-import { ZodSchema } from 'zod';
+import { ZodSchema, z } from 'zod';
 
 export type ErrorCode =
   | 'INVALID_JSON'
@@ -21,17 +21,17 @@ export interface ToolPolicy {
   }) => PolicyDecision | Promise<PolicyDecision>;
 }
 
-export interface ToolEntry {
+export interface ToolEntry<S extends ZodSchema = ZodSchema<unknown>> {
   name: string;
-  schema: ZodSchema<unknown>;
+  schema: S;
   description?: string;
   policy?: ToolPolicy;
 }
 
 export interface Registry {
-  registerTool(
+  registerTool<S extends ZodSchema<any>>(
     name: string,
-    schema: ZodSchema<unknown>,
+    schema: S,
     options?: { description?: string; policy?: ToolPolicy },
   ): void;
   getToolSchema(name: string): ZodSchema<unknown> | undefined;
@@ -52,7 +52,8 @@ export interface CircuitBreakerEvent {
     | 'ACTION_ALLOWED'
     | 'ACTION_BLOCKED'
     | 'POLICY_TRIPPED'
-    | 'INVALID_STRUCTURE';
+    | 'INVALID_STRUCTURE'
+    | 'ACTION_EXECUTED';
   attempt?: number;
   tool_name?: string;
   error_code?: ErrorCode;
@@ -70,6 +71,7 @@ export interface GuardParams {
   maxAttempts?: number;
   allowTools?: string[];
   strictJsonOnly?: boolean;
+  toolCallFormat?: 'envelope' | 'openai' | 'anthropic';
   onAttempt?: (event: AttemptEvent) => void;
   context?: unknown;
   onEvent?: (event: CircuitBreakerEvent) => void;
@@ -86,6 +88,9 @@ export type GuardResult<T = unknown> =
       reason?: string;
       escalate?: boolean;
     };
+
+/** Helper type to extract the inferred argument type from a Zod schema. */
+export type SchemaArgs<S extends ZodSchema> = z.infer<S>;
 
 export interface ToolCallEnvelope {
   tool_name: string;

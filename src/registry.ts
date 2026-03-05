@@ -5,9 +5,9 @@ export function createRegistry(): Registry {
   const tools = new Map<string, ToolEntry>();
 
   return {
-    registerTool(
+    registerTool<S extends ZodSchema<any>>(
       name: string,
-      schema: ZodSchema<unknown>,
+      schema: S,
       options?: { description?: string; policy?: ToolPolicy },
     ): void {
       tools.set(name, { name, schema, description: options?.description, policy: options?.policy });

@@ -1,12 +1,14 @@
 import { GuardParams, GuardResult, ErrorCode, CircuitBreakerEvent } from './types.js';
 import {
   parseJson,
+  parseJsonStrict,
   validateEnvelope,
   validateAllowlist,
   validateToolExists,
   validateArgs,
 } from './validate.js';
 import { buildCorrectionPrompt } from './prompts.js';
+import { parseOpenAIToolCall, parseAnthropicToolCall } from './adapters.js';
 
 function emit(
   onEvent: ((e: CircuitBreakerEvent) => void) | undefined,
@@ -42,6 +44,8 @@ export async function guardToolCall<T = unknown>(params: GuardParams): Promise<G
     initialPrompt,
     maxAttempts = 3,
     allowTools,
+    strictJsonOnly = false,
+    toolCallFormat = 'envelope',
     onAttempt,
     onEvent,
     context,
@@ -57,27 +61,75 @@ export async function guardToolCall<T = unknown>(params: GuardParams): Promise<G
     const raw = await modelCall(currentPrompt);
     lastOutput = raw;
 
-    // Step 1: Parse JSON
-    const parsed = parseJson(raw);
-    if (!parsed.ok) {
-      lastErrorCode = 'INVALID_JSON';
-      lastErrors = ['Output is not valid JSON'];
-      onAttempt?.({ attempt, rawOutput: raw, errorCode: lastErrorCode, errors: lastErrors });
-      emitAttemptFailure(onEvent, attempt, lastErrorCode, lastErrors, true);
-      if (attempt < maxAttempts) {
-        currentPrompt = buildCorrectionPrompt({
-          errorCode: lastErrorCode,
-          errors: lastErrors,
-          tools: registry.listTools().filter((t) => effectiveAllowlist.includes(t.name)),
-          lastOutput: raw,
-        });
-        continue;
+    // Step 1: Parse JSON (or adapt from OpenAI/Anthropic format)
+    let parsedEnvelopeValue: unknown;
+
+    if (toolCallFormat === 'openai' || toolCallFormat === 'anthropic') {
+      // For adapter formats, parse the raw string as JSON first, then adapt
+      const jsonResult = strictJsonOnly ? parseJsonStrict(raw) : parseJson(raw);
+      if (!jsonResult.ok) {
+        lastErrorCode = 'INVALID_JSON';
+        lastErrors = ['Output is not valid JSON'];
+        onAttempt?.({ attempt, rawOutput: raw, errorCode: lastErrorCode, errors: lastErrors });
+        emitAttemptFailure(onEvent, attempt, lastErrorCode, lastErrors, true);
+        if (attempt < maxAttempts) {
+          currentPrompt = buildCorrectionPrompt({
+            errorCode: lastErrorCode,
+            errors: lastErrors,
+            tools: registry.listTools().filter((t) => effectiveAllowlist.includes(t.name)),
+            lastOutput: raw,
+          });
+          continue;
+        }
+        break;
       }
-      break;
+
+      try {
+        if (toolCallFormat === 'openai') {
+          parsedEnvelopeValue = parseOpenAIToolCall(jsonResult.value);
+        } else {
+          parsedEnvelopeValue = parseAnthropicToolCall(jsonResult.value);
+        }
+      } catch (err) {
+        lastErrorCode = 'INVALID_ENVELOPE';
+        lastErrors = [err instanceof Error ? err.message : 'Adapter parsing failed'];
+        onAttempt?.({ attempt, rawOutput: raw, errorCode: lastErrorCode, errors: lastErrors });
+        emitAttemptFailure(onEvent, attempt, lastErrorCode, lastErrors, true);
+        if (attempt < maxAttempts) {
+          currentPrompt = buildCorrectionPrompt({
+            errorCode: lastErrorCode,
+            errors: lastErrors,
+            tools: registry.listTools().filter((t) => effectiveAllowlist.includes(t.name)),
+            lastOutput: raw,
+          });
+          continue;
+        }
+        break;
+      }
+    } else {
+      // Default envelope format
+      const parsed = strictJsonOnly ? parseJsonStrict(raw) : parseJson(raw);
+      if (!parsed.ok) {
+        lastErrorCode = 'INVALID_JSON';
+        lastErrors = ['Output is not valid JSON'];
+        onAttempt?.({ attempt, rawOutput: raw, errorCode: lastErrorCode, errors: lastErrors });
+        emitAttemptFailure(onEvent, attempt, lastErrorCode, lastErrors, true);
+        if (attempt < maxAttempts) {
+          currentPrompt = buildCorrectionPrompt({
+            errorCode: lastErrorCode,
+            errors: lastErrors,
+            tools: registry.listTools().filter((t) => effectiveAllowlist.includes(t.name)),
+            lastOutput: raw,
+          });
+          continue;
+        }
+        break;
+      }
+      parsedEnvelopeValue = parsed.value;
     }
 
     // Step 2: Validate envelope
-    const envelopeResult = validateEnvelope(parsed.value);
+    const envelopeResult = validateEnvelope(parsedEnvelopeValue);
     if (!envelopeResult.ok) {
       lastErrorCode = envelopeResult.errorCode!;
       lastErrors = envelopeResult.errors!;
