@@ -388,6 +388,10 @@ const result = await guardToolCall({
 | Policy blocks the action | Returns `{ ok: false, error_code: "POLICY_TRIPPED", reason, escalate }` immediately |
 | `modelCall` throws | Exception propagates to caller — wrap in try/catch if needed |
 
+## Releasing
+
+Push a tag `vX.Y.Z` to publish to npm via GitHub Actions. Requires the `NPM_TOKEN` secret to be set in the repository settings. See [RELEASING.md](./RELEASING.md) for full instructions.
+
 ## Development
 
 ```bash
