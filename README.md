@@ -103,7 +103,8 @@ Validates an LLM output against the registered tools, evaluates policies, and re
 | `initialPrompt` | `string` | required | The first prompt to send to the model |
 | `maxAttempts` | `number` | `3` | Maximum number of attempts (including retries) |
 | `allowTools` | `string[]` | all registered tools | Allowlist of permitted tool names |
-| `strictJsonOnly` | `boolean` | `true` | Reserved for future use |
+| `strictJsonOnly` | `boolean` | `false` | If `true`, skip all JSON extraction heuristics — only accept raw `JSON.parse` |
+| `toolCallFormat` | `"envelope" \| "openai" \| "anthropic"` | `"envelope"` | Input format adapter — see [Adapters](#adapters) |
 | `onAttempt` | `(event: AttemptEvent) => void` | — | Callback fired after each attempt (backwards-compatible) |
 | `context` | `unknown` | — | Optional context passed to policy `preExecute` hooks |
 | `onEvent` | `(event: CircuitBreakerEvent) => void` | — | Callback fired for structured telemetry events |
@@ -165,7 +166,7 @@ interface AttemptEvent {
 
 ```ts
 interface CircuitBreakerEvent {
-  eventType: 'RETRY_ATTEMPT' | 'ACTION_ALLOWED' | 'ACTION_BLOCKED' | 'POLICY_TRIPPED' | 'INVALID_STRUCTURE';
+  eventType: 'RETRY_ATTEMPT' | 'ACTION_ALLOWED' | 'ACTION_BLOCKED' | 'POLICY_TRIPPED' | 'INVALID_STRUCTURE' | 'ACTION_EXECUTED';
   attempt?: number;
   tool_name?: string;
   error_code?: ErrorCode;
@@ -193,7 +194,149 @@ type PolicyDecision =
   | { allow: false; reason: string; escalate?: boolean };
 ```
 
-## Examples
+## Adapters
+
+ToolCallGuard supports normalizing OpenAI and Anthropic tool call formats into the internal envelope automatically.
+
+### OpenAI tool call format
+
+```ts
+import { createRegistry, guardToolCall } from 'toolcallguard';
+import { z } from 'zod';
+
+const registry = createRegistry();
+registry.registerTool('refund_order', z.object({ order_id: z.string(), reason: z.string() }));
+
+// modelCall returns an OpenAI-style response string
+const modelCall = async (prompt: string) =>
+  JSON.stringify({
+    tool_calls: [
+      {
+        function: {
+          name: 'refund_order',
+          arguments: JSON.stringify({ order_id: 'ORD-99', reason: 'damaged' }),
+        },
+      },
+    ],
+  });
+
+const result = await guardToolCall({
+  registry,
+  modelCall,
+  initialPrompt: 'Refund order ORD-99.',
+  toolCallFormat: 'openai',
+});
+
+if (result.ok) {
+  console.log(result.tool_name); // "refund_order"
+  console.log(result.args);      // { order_id: "ORD-99", reason: "damaged" }
+}
+```
+
+### Anthropic tool call format
+
+```ts
+const modelCall = async (prompt: string) =>
+  JSON.stringify({
+    name: 'refund_order',
+    input: { order_id: 'ORD-99', reason: 'damaged' },
+  });
+
+const result = await guardToolCall({
+  registry,
+  modelCall,
+  initialPrompt: 'Refund order ORD-99.',
+  toolCallFormat: 'anthropic',
+});
+```
+
+You can also use the adapter functions directly:
+
+```ts
+import { parseOpenAIToolCall, parseAnthropicToolCall } from 'toolcallguard';
+
+const envelope = parseOpenAIToolCall(openAiResponse);
+// { tool_name: "refund_order", args: { order_id: "ORD-99", reason: "damaged" } }
+```
+
+---
+
+## Typed args
+
+`registerTool` is generic over the Zod schema, so you can extract the inferred arg type:
+
+```ts
+import { z } from 'zod';
+import { createRegistry, guardToolCall, SchemaArgs } from 'toolcallguard';
+
+const refundSchema = z.object({ order_id: z.string(), reason: z.string() });
+type RefundArgs = SchemaArgs<typeof refundSchema>; // { order_id: string; reason: string }
+
+const registry = createRegistry();
+registry.registerTool('refund_order', refundSchema);
+
+const result = await guardToolCall<RefundArgs>({
+  registry,
+  modelCall,
+  initialPrompt: 'Refund order ORD-1.',
+});
+
+if (result.ok) {
+  result.args.order_id; // string — strongly typed!
+  result.args.reason;   // string — strongly typed!
+}
+```
+
+---
+
+## `guardAndExecute` helper
+
+Combines guard + execute in a single call. If the guard passes, `executeTool` is called and an `ACTION_EXECUTED` event is emitted.
+
+```ts
+import { z } from 'zod';
+import { createRegistry, guardAndExecute } from 'toolcallguard';
+
+const registry = createRegistry();
+registry.registerTool('refund_order', z.object({ order_id: z.string(), reason: z.string() }));
+
+const result = await guardAndExecute({
+  registry,
+  modelCall: async (prompt) => callYourLLM(prompt),
+  initialPrompt: 'Refund order ORD-99.',
+  executeTool: async (toolName, args) => {
+    // your execution logic
+    return { success: true, refundId: 'REF-001' };
+  },
+  onEvent: (event) => console.log(event),
+});
+
+if (result.ok) {
+  console.log(result.tool_name);       // "refund_order"
+  console.log(result.args);            // { order_id: "ORD-99", reason: "..." }
+  console.log(result.executionResult); // { success: true, refundId: "REF-001" }
+}
+```
+
+---
+
+## Strict JSON mode
+
+By default, ToolCallGuard tries to extract JSON from markdown fences or surrounding text. To disable this behaviour and only accept raw `JSON.parse` output:
+
+```ts
+const result = await guardToolCall({
+  registry,
+  modelCall,
+  initialPrompt: 'Refund order ORD-99.',
+  strictJsonOnly: true, // only accept raw JSON — no markdown stripping, no extraction
+});
+```
+
+This is useful when your LLM is configured in a structured output mode and you want to fail fast on any non-JSON response.
+
+---
+
 
 - [`examples/raw-openai-style/index.ts`](./examples/raw-openai-style/index.ts) — basic retry flow with stub model
 - [`examples/production-like/index.ts`](./examples/production-like/index.ts) — policy hook that blocks high-value refunds, with `onEvent` telemetry

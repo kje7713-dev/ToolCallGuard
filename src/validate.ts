@@ -70,6 +70,18 @@ export function parseJson(raw: string): { ok: true; value: unknown } | { ok: fal
   }
 }
 
+/**
+ * Strict JSON parser — only accepts raw JSON.parse without any heuristics.
+ * Used when strictJsonOnly=true.
+ */
+export function parseJsonStrict(raw: string): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch {
+    return { ok: false };
+  }
+}
+
 export function validateEnvelope(value: unknown): ValidationResult {
   if (
     typeof value !== 'object' ||
