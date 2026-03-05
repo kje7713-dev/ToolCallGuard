@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
   release:
@@ -22,10 +23,18 @@ jobs:
         run: npm ci
 
       - name: Check version matches tag
+        if: github.event_name == 'push'
         run: node scripts/check-version.mjs
 
       - name: Build
         run: npm run build
+
+      - name: Verify build artifacts
+        run: |
+          if [ ! -d "dist" ]; then
+            echo "dist folder missing. Build failed."
+            exit 1
+          fi
 
       - name: Verify release env
         run: node scripts/verify-release-env.mjs
@@ -33,6 +42,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: |
+          npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
